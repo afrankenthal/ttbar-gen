@@ -51,7 +51,7 @@ RUN mkdir -p /opt/build && cd /opt/build \
 
 # Pythia 8.306 (MadLAD fetches .tar; the site also serves .tgz)
 RUN mkdir -p /opt/build && cd /opt/build \
-    && ( wget -q https://pythia.org/download/pythia83/pythia8306.tar \
+    && ( wget -q https://pythia.org/releases/pythia83/pythia8306.tgz \
          || wget -q https://pythia.org/download/pythia83/pythia8306.tgz ) \
     && tar -xf pythia8306.t* && cd pythia8306 \
     && ./configure --prefix=/usr/local --with-hepmc2=/usr/local \
