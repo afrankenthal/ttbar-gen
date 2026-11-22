@@ -1,0 +1,83 @@
+#!/bin/bash
+# One-time setup: fetch MadLAD, create the MG5 process directory with MadLAD's own
+# card-writing code, integrate the NLO grids once, and pack everything for the jobs.
+#
+# Run this on a compute node (interactive session with ~8 cores), not a login node:
+# it compiles the process and, in GRID_MODE=reuse, runs the NLO integration.
+#
+# usage: scripts/00_setup.sh [ncores]
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../config.sh"
+ttgen_modules
+NCORES="${1:-8}"
+
+command -v "${CONTAINER_CMD}" >/dev/null || { echo "setup: '${CONTAINER_CMD}' not found; load its module or set MODULE_LOADS" >&2; exit 1; }
+command -v singularity >/dev/null || { echo "setup: MadLAD needs a binary named 'singularity' on PATH (a symlink to apptainer is fine)" >&2; exit 1; }
+[[ -s "${SIF}" ]] || { echo "setup: container image ${SIF} not found; build container/madlad-hyper.def first" >&2; exit 1; }
+mkdir -p "${WORK}" "${OUTDIR}/raw" "${WORK}/logs"
+
+# ---- 1. MadLAD at the pinned commit -------------------------------------------
+if [[ ! -d "${WORK}/MadLAD/.git" ]]; then
+    git clone "${MADLAD_REPO}" "${WORK}/MadLAD"
+fi
+git -C "${WORK}/MadLAD" checkout --quiet "${MADLAD_COMMIT}"
+cp "${TTGEN_ROOT}/process/ttbar-allhad-hyper.yaml" "${WORK}/MadLAD/processes/"
+
+# ---- 2. Delphes card: MadLAD's ATLAS card with a slimmed output tree -----------
+python3 "${TTGEN_ROOT}/scripts/make_slim_card.py" \
+    "${WORK}/MadLAD/delphes/ATLAS_sim_FASTJET.tcl" "${WORK}/ATLAS_sim_FASTJET_slim.tcl"
+
+# ---- 3. host-side Python for MadLAD's driver (it calls singularity itself) -----
+if [[ ! -x "${WORK}/venv/bin/python" ]]; then
+    python3 -m venv "${WORK}/venv"
+    "${WORK}/venv/bin/pip" install --quiet hydra-core omegaconf pyyaml
+fi
+
+# ---- 4. process directory, cards written by MadLAD ----------------------------
+cd "${WORK}/MadLAD"
+if [[ -d "${PROC_NAME}" ]]; then
+    echo "setup: ${WORK}/MadLAD/${PROC_NAME} already exists; remove it to start over" >&2
+    exit 1
+fi
+"${WORK}/venv/bin/python" -m madlad.generate --config-name=ttbar-allhad-hyper \
+    "run.image=${SIF}" "gen.block_model.save_dir=${PROC_NAME}" \
+    "gen.block_settings.nb_core=${NCORES}"
+
+# MadLAD only warns when a step fails, so check what it produced.
+for f in Cards/run_card.dat Cards/madspin_card.dat Cards/param_card.dat Cards/shower_card.dat SubProcesses/setscales.f; do
+    [[ -s "${PROC_NAME}/${f}" ]] || { echo "setup: ${PROC_NAME}/${f} is missing; process creation failed" >&2; exit 1; }
+done
+grep -q "mt\*\*2 + 0.5\*(pt\*\*2+ptbar\*\*2)" "${PROC_NAME}/SubProcesses/setscales.f" \
+    || { echo "setup: the custom scale was not written into setscales.f" >&2; exit 1; }
+grep -q "decay t > w+ b, w+ > j j" "${PROC_NAME}/Cards/madspin_card.dat" \
+    || { echo "setup: the MadSpin card does not hold the all-hadronic decays" >&2; exit 1; }
+# These must be editable per job; fail now rather than in 20,000 jobs.
+cp "${PROC_NAME}/Cards/run_card.dat" /tmp/ttgen_run_card_check.$$
+python3 "${TTGEN_ROOT}/scripts/set_card.py" run /tmp/ttgen_run_card_check.$$ nevents=1 iseed=1
+cp "${PROC_NAME}/Cards/shower_card.dat" /tmp/ttgen_shower_card_check.$$
+python3 "${TTGEN_ROOT}/scripts/set_card.py" shower /tmp/ttgen_shower_card_check.$$ rnd_seed=1
+rm -f /tmp/ttgen_run_card_check.$$ /tmp/ttgen_shower_card_check.$$
+
+tar -czf "${WORK}/gridpack_fresh.tar.gz" "${PROC_NAME}"
+echo "setup: wrote ${WORK}/gridpack_fresh.tar.gz"
+
+# ---- 5. integrate the grids once (GRID_MODE=reuse) ----------------------------
+if [[ "${GRID_MODE}" == "reuse" ]]; then
+    python3 "${TTGEN_ROOT}/scripts/set_card.py" run "${PROC_NAME}/Cards/run_card.dat" \
+        "nevents=${GRID_SETUP_EVENTS}" "iseed=${SEED_BASE}"
+    cat > "${WORK}/MadLAD/mg5_setup_card" <<CARD
+set run_mode 2
+set nb_core ${NCORES}
+launch ${PROC_NAME} -i
+generate_events -p -f
+CARD
+    cexec "${WORK}/MadLAD" /app/MG5_aMC/bin/mg5_aMC mg5_setup_card
+    ls "${PROC_NAME}"/Events/*/events.lhe.gz >/dev/null 2>&1 \
+        || { echo "setup: the grid-setup run produced no events; see the MG5 log above" >&2; exit 1; }
+    grep -i "cross.section" -A 3 "${PROC_NAME}"/Events/run_01/summary.txt 2>/dev/null || true
+    rm -rf "${PROC_NAME}/Events"/*
+    tar -czf "${WORK}/gridpack_reuse.tar.gz" "${PROC_NAME}"
+    echo "setup: wrote ${WORK}/gridpack_reuse.tar.gz"
+fi
+
+echo "setup: done. Next: scripts/job.sh 1 (pilot), then scripts/submit.sh"
