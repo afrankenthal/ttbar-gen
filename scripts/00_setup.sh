@@ -16,30 +16,38 @@ command -v singularity >/dev/null || { echo "setup: MadLAD needs a binary named 
 [[ -s "${SIF}" ]] || { echo "setup: container image ${SIF} not found; build container/madlad-hyper.def first" >&2; exit 1; }
 mkdir -p "${WORK}" "${OUTDIR}/raw" "${WORK}/logs"
 
+# Build on node-local scratch, not on the shared filesystem: compiling and integrating
+# the process touches tens of thousands of small files, which is slow there and loads
+# it for everyone. Only the finished tarballs and the Delphes card are copied to WORK.
+# The build directory is deleted with the job's scratch; set SETUP_BUILD_DIR to keep it.
+BUILD="$(readlink -m "${SETUP_BUILD_DIR:-${SCRATCH_BASE}/ttgen_setup_${USER}}")"
+mkdir -p "${BUILD}"
+echo "setup: building in ${BUILD}"
+
 # ---- 1. MadLAD at the pinned commit -------------------------------------------
-if [[ ! -d "${WORK}/MadLAD/.git" ]]; then
-    git clone "${MADLAD_REPO}" "${WORK}/MadLAD"
+if [[ ! -d "${BUILD}/MadLAD/.git" ]]; then
+    git clone "${MADLAD_REPO}" "${BUILD}/MadLAD"
 fi
-git -C "${WORK}/MadLAD" checkout --quiet "${MADLAD_COMMIT}"
-cp "${TTGEN_ROOT}/process/ttbar-allhad-hyper.yaml" "${WORK}/MadLAD/processes/"
+git -C "${BUILD}/MadLAD" checkout --quiet "${MADLAD_COMMIT}"
+cp "${TTGEN_ROOT}/process/ttbar-allhad-hyper.yaml" "${BUILD}/MadLAD/processes/"
 
 # ---- 2. Delphes card: MadLAD's ATLAS card with a slimmed output tree -----------
 python3 "${TTGEN_ROOT}/scripts/make_slim_card.py" \
-    "${WORK}/MadLAD/delphes/ATLAS_sim_FASTJET.tcl" "${WORK}/ATLAS_sim_FASTJET_slim.tcl"
+    "${BUILD}/MadLAD/delphes/ATLAS_sim_FASTJET.tcl" "${WORK}/ATLAS_sim_FASTJET_slim.tcl"
 
 # ---- 3. host-side Python for MadLAD's driver (it calls singularity itself) -----
-if [[ ! -x "${WORK}/venv/bin/python" ]]; then
-    python3 -m venv "${WORK}/venv"
-    "${WORK}/venv/bin/pip" install --quiet hydra-core omegaconf pyyaml
+if [[ ! -x "${BUILD}/venv/bin/python" ]]; then
+    python3 -m venv "${BUILD}/venv"
+    "${BUILD}/venv/bin/pip" install --quiet hydra-core omegaconf pyyaml
 fi
 
 # ---- 4. process directory, cards written by MadLAD ----------------------------
-cd "${WORK}/MadLAD"
+cd "${BUILD}/MadLAD"
 if [[ -d "${PROC_NAME}" ]]; then
-    echo "setup: ${WORK}/MadLAD/${PROC_NAME} already exists; remove it to start over" >&2
+    echo "setup: ${BUILD}/MadLAD/${PROC_NAME} already exists; remove it to start over" >&2
     exit 1
 fi
-"${WORK}/venv/bin/python" -m madlad.generate --config-name=ttbar-allhad-hyper \
+"${BUILD}/venv/bin/python" -m madlad.generate --config-name=ttbar-allhad-hyper \
     "run.image=${SIF}" "gen.block_model.save_dir=${PROC_NAME}" \
     "gen.block_settings.nb_core=${NCORES}"
 
@@ -58,25 +66,27 @@ cp "${PROC_NAME}/Cards/shower_card.dat" /tmp/ttgen_shower_card_check.$$
 python3 "${TTGEN_ROOT}/scripts/set_card.py" shower /tmp/ttgen_shower_card_check.$$ rnd_seed=1
 rm -f /tmp/ttgen_run_card_check.$$ /tmp/ttgen_shower_card_check.$$
 
-tar -czf "${WORK}/gridpack_fresh.tar.gz" "${PROC_NAME}"
+tar -czf "${BUILD}/gridpack_fresh.tar.gz" "${PROC_NAME}"
+cp "${BUILD}/gridpack_fresh.tar.gz" "${WORK}/gridpack_fresh.tar.gz"
 echo "setup: wrote ${WORK}/gridpack_fresh.tar.gz"
 
 # ---- 5. integrate the grids once (GRID_MODE=reuse) ----------------------------
 if [[ "${GRID_MODE}" == "reuse" ]]; then
     python3 "${TTGEN_ROOT}/scripts/set_card.py" run "${PROC_NAME}/Cards/run_card.dat" \
         "nevents=${GRID_SETUP_EVENTS}" "iseed=${SEED_BASE}"
-    cat > "${WORK}/MadLAD/mg5_setup_card" <<CARD
+    cat > "${BUILD}/MadLAD/mg5_setup_card" <<CARD
 set run_mode 2
 set nb_core ${NCORES}
 launch ${PROC_NAME} -i
 generate_events -p -f
 CARD
-    cexec "${WORK}/MadLAD" /app/MG5_aMC/bin/mg5_aMC mg5_setup_card
+    cexec "${BUILD}/MadLAD" /app/MG5_aMC/bin/mg5_aMC mg5_setup_card
     ls "${PROC_NAME}"/Events/*/events.lhe.gz >/dev/null 2>&1 \
         || { echo "setup: the grid-setup run produced no events; see the MG5 log above" >&2; exit 1; }
     grep -i "cross.section" -A 3 "${PROC_NAME}"/Events/run_01/summary.txt 2>/dev/null || true
     rm -rf "${PROC_NAME}/Events"/*
-    tar -czf "${WORK}/gridpack_reuse.tar.gz" "${PROC_NAME}"
+    tar -czf "${BUILD}/gridpack_reuse.tar.gz" "${PROC_NAME}"
+    cp "${BUILD}/gridpack_reuse.tar.gz" "${WORK}/gridpack_reuse.tar.gz"
     echo "setup: wrote ${WORK}/gridpack_reuse.tar.gz"
 fi
 

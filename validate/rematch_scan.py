@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Try every matching rule on the stored quarks and print the label rates next to HyPER's.
 
-usage: rematch_scan.py 'raw/*.root' [--entries N] [--match-dr R]
+usage: rematch_scan.py <raw dir or glob> [--entries N] [--match-dr R]
 
 Per-task files keep the six decay quarks, so labels can be recomputed without new
 events. HyPER's published file shows top 2 matched more often than top 1; this scan
@@ -23,13 +23,14 @@ HYPER = {"top1": 57.75, "top2": 61.82, "all": 26.80, "labels": [88.5, 84.2, 78.9
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("files", help="per-task files (glob)")
+    ap.add_argument("files", help="the raw directory, or a glob of per-task files")
     ap.add_argument("--entries", type=int, default=1000000)
     ap.add_argument("--match-dr", type=float, default=0.4)
     a = ap.parse_args()
 
     chunks, n = [], 0
-    for f in sorted(glob.glob(a.files)):
+    files = hyperio.task_files(a.files, ".root") if os.path.isdir(a.files) else sorted(glob.glob(a.files))
+    for f in files:
         chunks.append(hyperio.read(f))
         n += len(chunks[-1]["jet_pt"])
         if n >= a.entries:

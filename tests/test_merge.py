@@ -27,19 +27,24 @@ def run(*cmd):
 def main(delphes):
     tmp = tempfile.mkdtemp(prefix="ttgen_merge_")
     raw = os.path.join(tmp, "raw")
-    os.makedirs(raw)
-    for task in (1, 2, 3, 5):
+    # task ids chosen to land in two subfolders (raw/000 and raw/001), as job.sh writes them
+    for task in (1, 2, 1003, 1005):
+        sub = os.path.join(raw, "%03d" % ((task - 1) // 1000))
+        os.makedirs(sub, exist_ok=True)
         run(os.path.join(ROOT, "convert", "delphes_to_hyper.py"), "--input", delphes,
-            "--output", os.path.join(raw, "ttbar_allhad_%06d.root" % task),
-            "--meta", os.path.join(raw, "ttbar_allhad_%06d.json" % task), "--max-truth-fail-frac", "0.5",
+            "--output", os.path.join(sub, "ttbar_allhad_%06d.root" % task),
+            "--meta", os.path.join(sub, "ttbar_allhad_%06d.json" % task), "--max-truth-fail-frac", "0.5",
             "--extra", "task=%d" % task, "--extra", "n_requested=900", "--extra", "seconds_generation=1800",
             "--extra", "seconds_delphes=900", "--extra", "cores=2", "--extra", "scratch_after_generation_kb=9000000")
-    status = run(os.path.join(ROOT, "scripts", "status.py"), raw, "--tasks", "6", "--missing", os.path.join(tmp, "missing.txt"))
+    status = run(os.path.join(ROOT, "scripts", "status.py"), raw, "--first", "1001", "--last", "1006",
+                 "--missing", os.path.join(tmp, "missing.txt"))
     print(status)
-    assert open(os.path.join(tmp, "missing.txt")).read().split() == ["4", "6"]
+    assert open(os.path.join(tmp, "missing.txt")).read().split() == ["1001", "1002", "1004", "1006"]
     assert "events selected       2000" in status and "stored for re-matching 2400" in status
 
-    rawdata = hyperio.concatenate([hyperio.read(f) for f in sorted(glob.glob(os.path.join(raw, "*.root")))])
+    files_in = hyperio.task_files(raw, ".root")
+    assert [os.path.basename(f)[-11:-5] for f in files_in] == ["000001", "000002", "001003", "001005"]
+    rawdata = hyperio.concatenate([hyperio.read(f) for f in files_in])
     keep = np.asarray(rawdata["leastOneMatchedW"]) > 0
 
     out = os.path.join(tmp, "merged")
@@ -65,7 +70,7 @@ def main(delphes):
     man = json.load(open(os.path.join(out2, "ttbar_new_manifest.json")))
     assert man["conflict"] == "last-wins" and man["events"] == 2000 and man["events_before_matched_w_requirement"] == 2400
 
-    print(run(os.path.join(ROOT, "validate", "rematch_scan.py"), os.path.join(raw, "*.root")))
+    print(run(os.path.join(ROOT, "validate", "rematch_scan.py"), raw))
     print("test_merge: OK (files in %s)" % tmp)
 
 

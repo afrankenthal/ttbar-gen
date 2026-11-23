@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """Summarise finished tasks from their JSON files and list the ones still missing.
 
-usage: status.py <raw dir> [--tasks N] [--first A --last B] [--target-selected N] [--missing FILE]
+usage: status.py <raw dir>   (reads <raw dir>/*.json and <raw dir>/*/*.json)
+       status.py <raw dir> [--tasks N] [--first A --last B] [--target-selected N] [--missing FILE]
 
 The pilot numbers to read off: selection efficiency (HyPER: 14.67%), fully matched
 fraction of selected (HyPER: 26.7%), seconds per event, and peak scratch use.
 """
 import argparse
-import glob
 import json
 import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pylib"))
+import hyperio  # noqa: E402
 
 HYPER_EFF = 8801060.0 / 60000000.0
 HYPER_ALL_MATCHED = (2116231 + 117487 + 116960) / 8801060.0
@@ -26,7 +30,7 @@ def main():
     a = ap.parse_args()
 
     metas = []
-    for path in sorted(glob.glob(os.path.join(a.raw, "*.json"))):
+    for path in hyperio.task_files(a.raw, ".json"):
         with open(path) as f:
             metas.append(json.load(f))
     if not metas:

@@ -5,9 +5,11 @@ on a slurm cluster and writes them in the layout of the HyPER dataset
 (Zenodo 10.5281/zenodo.10653837), so a loader written for `ttbar_train.root` reads them
 unchanged.
 
-**Status: the conversion, matching, merging, bookkeeping and validation code is tested on synthetic
-files. Nothing that needs MadGraph, a container or slurm has been run.** The first build
-and the first pilot job will need fixes; the section "Not yet run" lists where to expect them.
+**Status (23 Nov 2026): the conversion, matching, merging, bookkeeping and validation code
+is tested on synthetic files. The container is built (GitHub Actions) and pulled to HPC3,
+with Delphes, MadGraph, Pythia and LHAPDF confirmed inside. No MadGraph step and no slurm
+job has run yet.** The setup and the first pilot job will need fixes; the section
+"Not yet run" lists where to expect them.
 
 ## Target
 
@@ -82,7 +84,8 @@ and run `validate/rematch_scan.py` to see whether another matching rule reproduc
 
 ## Re-matching without regenerating
 
-Per-task files in `$OUTDIR/raw` hold every event that passed the jet and b-tag cuts,
+Per-task files in `$OUTDIR/raw` (in subfolders of 1,000 tasks: `raw/000`, `raw/001`, ...)
+hold every event that passed the jet and b-tag cuts,
 with the six decay quarks (b, q, qbar of the top, then of the antitop) alongside the
 jets. The matched-W requirement is only a flag there. `scripts/merge.py` applies it and
 drops the quarks, which gives HyPER's layout.
@@ -90,7 +93,7 @@ drops the quarks, which gives HyPER's layout.
 So the matching rule can change after production:
 
 ```
-python3 validate/rematch_scan.py "$OUTDIR/raw/*.root"          # label rates under every rule, next to HyPER's
+python3 validate/rematch_scan.py $OUTDIR/raw          # label rates under every rule, next to HyPER's
 python3 scripts/merge.py $OUTDIR/raw $OUTDIR/merged_v2 --rematch --conflict last-wins --match-dr 0.4
 ```
 
@@ -104,15 +107,23 @@ or b-tag selection, or to which generator-record quarks are stored.
 1. **Inspect HyPER's file** (done once; rerun if the files change):
    `python3 validate/inspect_hyper.py ttbar_reduced.root`
 2. **Edit `config.sh`.** Every line marked `CHECK` is a guess about HPC3.
-3. **Build the container:**
-   `singularity build --fakeroot $WORK/madlad-hyper.sif container/madlad-hyper.def`
-   If the cluster does not allow `--fakeroot`, build on any machine with root and copy the `.sif`.
+3. **Get the container.** HPC3 does not allow container builds for ordinary accounts
+   (no fakeroot mapping, and unprivileged builds fail at package installation), so the
+   image is built by GitHub and pulled:
+   - push this directory to a GitHub repository; the `build-container` workflow builds
+     `container/Dockerfile` and publishes `ghcr.io/<owner>/madlad-hyper:latest`
+   - on HPC3: `apptainer pull $WORK/madlad-hyper.sif docker://ghcr.io/<owner>/madlad-hyper:latest`
+
+   `container/madlad-hyper.def` is the same stack for sites that do allow
+   `singularity build --fakeroot`.
 4. **Set up** (interactive session, 8 cores, about an hour):
    `scripts/00_setup.sh 8`
+   The build runs on node-local scratch; only two tarballs and the Delphes card are
+   copied to `$WORK`. Shared filesystems such as `/pub` are slow with many small files.
 5. **Pilot** (interactive session): `scripts/job.sh 1 2000`, then `scripts/job.sh 2`
    for a full-size task. Then `python3 scripts/status.py $OUTDIR/raw`.
    Compare with HyPER: efficiency 14.67%, fully matched 26.7% of selected, top 1 / top 2
-   matched 57.8% / 61.8%. Run `validate/rematch_scan.py "$OUTDIR/raw/*.root"`. Read off the
+   matched 57.8% / 61.8%. Run `validate/rematch_scan.py $OUTDIR/raw`. Read off the
    time per event and scratch use, and adjust `WALLTIME`, `EVENTS_PER_JOB`, `CORES_PER_JOB`.
 6. **First tranche = closure sample:** `scripts/submit.sh 1 2400` (60M generated, about
    8.8M selected, the size of HyPER itself). Run the validation below before going on.
@@ -144,7 +155,7 @@ HyPER's test file stays the test set for every number quoted against published r
 
 | Item | Risk |
 |---|---|
-| `container/madlad-hyper.def` | a download URL or package name may be wrong; the ROOT binary URL is the likeliest |
+| `container/madlad-hyper.def` | the Dockerfile with the same steps builds; the definition file itself has not completed a build |
 | `generate_events -o -n -f` reusing a relocated process directory | standard gridpack practice, untested here; fall back to `GRID_MODE=fresh` |
 | MadSpin and the shower running under `-f` | the job fails with a clear message if no showered file appears under `Events/*_decayed_*` |
 | `rnd_seed` key in the shower card | checked by `00_setup.sh` before any job runs |
@@ -157,7 +168,8 @@ HyPER's test file stays the test set for every number quoted against published r
 
 ```
 config.sh                      all settings
-container/madlad-hyper.def     software stack
+container/Dockerfile           software stack, built by .github/workflows/build-container.yml
+container/madlad-hyper.def     the same stack as a Singularity definition
 process/ttbar-allhad-hyper.yaml   MadLAD process config
 scripts/00_setup.sh            one-time: MadLAD, process directory, grids
 scripts/job.sh                 one task

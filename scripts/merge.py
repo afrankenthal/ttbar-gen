@@ -14,7 +14,6 @@ set" of the closure test; the rest go to <prefix>_train_000.root, _001, ...
 A manifest JSON records the settings and the event counts.
 """
 import argparse
-import glob
 import json
 import os
 import sys
@@ -46,7 +45,7 @@ def main():
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
 
-    files = sorted(glob.glob(os.path.join(a.raw, "*.root")))
+    files = hyperio.task_files(a.raw, ".root")
     if not files:
         raise SystemExit("merge: no .root files in %s" % a.raw)
 

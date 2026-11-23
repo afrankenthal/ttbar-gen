@@ -17,8 +17,11 @@ NEVENTS="${2:-${EVENTS_PER_JOB}}"
 NCORES="${SLURM_CPUS_PER_TASK:-${CORES_PER_JOB}}"
 SEED=$(( SEED_BASE + TASK ))
 TAG=$(printf "%s_%06d" "${PROC_NAME}" "${TASK}")
-FINAL_ROOT="${OUTDIR}/raw/${TAG}.root"
-FINAL_META="${OUTDIR}/raw/${TAG}.json"
+# Output goes into subfolders of RAW_BUCKET tasks (raw/000, raw/001, ...), so no single
+# directory on the shared filesystem collects tens of thousands of files.
+RAWDIR="${OUTDIR}/raw/$(printf '%03d' $(( (TASK - 1) / ${RAW_BUCKET:-1000} )))"
+FINAL_ROOT="${RAWDIR}/${TAG}.root"
+FINAL_META="${RAWDIR}/${TAG}.json"
 
 if [[ -s "${FINAL_META}" ]]; then
     echo "job ${TAG}: already done"
@@ -27,7 +30,7 @@ fi
 GRIDPACK="${WORK}/gridpack_${GRID_MODE}.tar.gz"
 CARD_SRC="${WORK}/ATLAS_sim_FASTJET_slim.tcl"
 [[ -s "${GRIDPACK}" && -s "${CARD_SRC}" ]] || { echo "job ${TAG}: run scripts/00_setup.sh first" >&2; exit 1; }
-mkdir -p "${OUTDIR}/raw"
+mkdir -p "${RAWDIR}"
 
 JOBDIR=$(mktemp -d "${SCRATCH_BASE}/ttgen_${TAG}_XXXXXX")
 trap 'rm -rf "${JOBDIR}"' EXIT
@@ -89,9 +92,9 @@ T_CONVERT=$(( SECONDS - T2 ))
 
 # ---- copy back; the json goes last and marks the task as done -----------------------
 if [[ -s "${TAG}.root" ]]; then
-    cp "${TAG}.root" "${OUTDIR}/raw/.${TAG}.root.tmp"
-    mv "${OUTDIR}/raw/.${TAG}.root.tmp" "${FINAL_ROOT}"
+    cp "${TAG}.root" "${RAWDIR}/.${TAG}.root.tmp"
+    mv "${RAWDIR}/.${TAG}.root.tmp" "${FINAL_ROOT}"
 fi
-cp "${TAG}.json" "${OUTDIR}/raw/.${TAG}.json.tmp"
-mv "${OUTDIR}/raw/.${TAG}.json.tmp" "${FINAL_META}"
+cp "${TAG}.json" "${RAWDIR}/.${TAG}.json.tmp"
+mv "${RAWDIR}/.${TAG}.json.tmp" "${FINAL_META}"
 echo "job ${TAG}: done in $(( SECONDS - T0 )) s (generation ${T_GEN}, delphes ${T_DELPHES}, convert ${T_CONVERT})"

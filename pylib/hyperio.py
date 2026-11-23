@@ -9,6 +9,9 @@ particles: t, tbar, W+, W-. Files written here hold the same values as arrays wi
 counter branch (uproot cannot write std::vector); uproot and awkward read both the
 same way. They also carry nparticle (a counter uproot adds) and eventWeight.
 """
+import glob
+import os
+
 import awkward as ak
 import numpy as np
 import uproot
@@ -96,6 +99,12 @@ class Writer(object):
 
     def close(self):
         self.file.close()
+
+
+def task_files(raw, ext):
+    """Per-task files under raw/ and its subfolders (raw/000, raw/001, ...), in task order."""
+    found = glob.glob(os.path.join(raw, "*" + ext)) + glob.glob(os.path.join(raw, "*", "*" + ext))
+    return sorted(found, key=os.path.basename)
 
 
 def drop_quarks(arrays):
