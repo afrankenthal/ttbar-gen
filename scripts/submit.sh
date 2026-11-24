@@ -8,12 +8,15 @@
 # Add DRYRUN=1 to print the sbatch commands without submitting.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../config.sh"
-[[ -n "${SLURM_ACCOUNT}" ]] || { echo "submit: set SLURM_ACCOUNT in config.sh" >&2; exit 1; }
 mkdir -p "${WORK}/logs" "${OUTDIR}/raw"
 
-SBATCH=(sbatch --parsable --job-name=ttgen --account="${SLURM_ACCOUNT}" --partition="${SLURM_PARTITION}"
+SBATCH=(sbatch --parsable --job-name=ttgen
         --nodes=1 --ntasks=1 --cpus-per-task="${CORES_PER_JOB}" --mem-per-cpu="${MEM_PER_CPU}"
         --time="${WALLTIME}" --output="${WORK}/logs/%A_%a.out")
+# Account and partition are passed only if set: some clusters require them, others
+# choose a default account and route jobs by their time limit.
+if [[ -n "${SLURM_ACCOUNT}" ]]; then SBATCH+=(--account="${SLURM_ACCOUNT}"); fi
+if [[ -n "${SLURM_PARTITION}" ]]; then SBATCH+=(--partition="${SLURM_PARTITION}"); fi
 run() { if [[ -n "${DRYRUN:-}" ]]; then echo "$*"; else "$@"; fi; }
 
 if [[ "${1:-}" == "--list" ]]; then
