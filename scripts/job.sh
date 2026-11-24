@@ -36,32 +36,40 @@ trap 'rm -rf "${JOBDIR}"' EXIT
 cd "${JOBDIR}"
 
 # ---- stage in ----------------------------------------------------------------
-# Everything the task needs is copied to node-local disk first, so the shared
-# filesystem is touched only here and in the final copy-back. The container image and
-# the gridpack go to a per-node cache shared by this user's tasks on the node.
-NODE_CACHE="${NODE_CACHE_DIR:-/tmp/${USER}/ttgen_cache}"
-mkdir -p "${NODE_CACHE}" 2>/dev/null || NODE_CACHE="${JOBDIR}/cache"
-mkdir -p "${NODE_CACHE}"
-
-# usage: stage <file on shared filesystem>  -> prints the local path
-stage() {
-    local src="$1" dst
-    dst="${NODE_CACHE}/$(basename "$1")"
-    (
-        flock 9
-        # same size and modification time as the source means the cached copy is current
-        if [[ ! -s "${dst}" || "$(stat -c '%s %Y' "${src}")" != "$(stat -c '%s %Y' "${dst}")" ]]; then
-            cp -p "${src}" "${dst}.tmp.$$" && mv "${dst}.tmp.$$" "${dst}"
-        fi
-    ) 9> "${dst}.lock"
-    [[ -s "${dst}" ]] || { echo "job ${TAG}: could not stage ${src}" >&2; return 1; }
-    echo "${dst}"
-}
-[[ -s "${WORK}/gridpack_${GRID_MODE}.tar.gz" && -s "${WORK}/ATLAS_sim_FASTJET_slim.tcl" && -s "${SIF}" ]] \
+# STAGE_TO_NODE=yes: copy the container image, gridpack and card to node-local disk first
+# (into a per-node cache shared by this user's tasks), so the shared filesystem is touched
+# only here and in the final copy-back. For shared filesystems that stall.
+# STAGE_TO_NODE=no: use them in place. For healthy shared filesystems; leaves nothing
+# behind in the node's /tmp.
+GRIDPACK="${WORK}/gridpack_${GRID_MODE}.tar.gz"
+CARD_SRC="${WORK}/ATLAS_sim_FASTJET_slim.tcl"
+LOCAL_SIF="${SIF}"
+[[ -s "${GRIDPACK}" && -s "${CARD_SRC}" && -s "${SIF}" ]] \
     || { echo "job ${TAG}: run scripts/00_setup.sh first" >&2; exit 1; }
-GRIDPACK=$(stage "${WORK}/gridpack_${GRID_MODE}.tar.gz")
-CARD_SRC=$(stage "${WORK}/ATLAS_sim_FASTJET_slim.tcl")
-LOCAL_SIF=$(stage "${SIF}")
+NODE_CACHE="(not used)"
+if [[ "${STAGE_TO_NODE:-yes}" == "yes" ]]; then
+    NODE_CACHE="${NODE_CACHE_DIR:-/tmp/${USER}/ttgen_cache}"
+    mkdir -p "${NODE_CACHE}" 2>/dev/null || NODE_CACHE="${JOBDIR}/cache"
+    mkdir -p "${NODE_CACHE}"
+
+    # usage: stage <file on shared filesystem>  -> prints the local path
+    stage() {
+        local src="$1" dst
+        dst="${NODE_CACHE}/$(basename "$1")"
+        (
+            flock 9
+            # same size and modification time as the source means the cached copy is current
+            if [[ ! -s "${dst}" || "$(stat -c '%s %Y' "${src}")" != "$(stat -c '%s %Y' "${dst}")" ]]; then
+                cp -p "${src}" "${dst}.tmp.$$" && mv "${dst}.tmp.$$" "${dst}"
+            fi
+        ) 9> "${dst}.lock"
+        [[ -s "${dst}" ]] || { echo "job ${TAG}: could not stage ${src}" >&2; return 1; }
+        echo "${dst}"
+    }
+    GRIDPACK=$(stage "${GRIDPACK}")
+    CARD_SRC=$(stage "${CARD_SRC}")
+    LOCAL_SIF=$(stage "${SIF}")
+fi
 mkdir -p code
 cp -r "${TTGEN_ROOT}/scripts" "${TTGEN_ROOT}/convert" "${TTGEN_ROOT}/pylib" code/
 T_STAGE=$(( SECONDS - T0 ))
