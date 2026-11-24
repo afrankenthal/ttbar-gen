@@ -27,24 +27,58 @@ if [[ -s "${FINAL_META}" ]]; then
     echo "job ${TAG}: already done"
     exit 0
 fi
-GRIDPACK="${WORK}/gridpack_${GRID_MODE}.tar.gz"
-CARD_SRC="${WORK}/ATLAS_sim_FASTJET_slim.tcl"
-[[ -s "${GRIDPACK}" && -s "${CARD_SRC}" ]] || { echo "job ${TAG}: run scripts/00_setup.sh first" >&2; exit 1; }
 mkdir -p "${RAWDIR}"
+echo "job ${TAG}: seed ${SEED}, ${NEVENTS} events, ${NCORES} cores, host $(hostname)"
+T0=${SECONDS}
 
 JOBDIR=$(mktemp -d "${SCRATCH_BASE}/ttgen_${TAG}_XXXXXX")
 trap 'rm -rf "${JOBDIR}"' EXIT
 cd "${JOBDIR}"
-echo "job ${TAG}: seed ${SEED}, ${NEVENTS} events, ${NCORES} cores, host $(hostname), dir ${JOBDIR}"
-T0=${SECONDS}
+
+# ---- stage in ----------------------------------------------------------------
+# Everything the task needs is copied to node-local disk first, so the shared
+# filesystem is touched only here and in the final copy-back. The container image and
+# the gridpack go to a per-node cache shared by this user's tasks on the node.
+NODE_CACHE="${NODE_CACHE_DIR:-/tmp/${USER}/ttgen_cache}"
+mkdir -p "${NODE_CACHE}" 2>/dev/null || NODE_CACHE="${JOBDIR}/cache"
+mkdir -p "${NODE_CACHE}"
+
+# usage: stage <file on shared filesystem>  -> prints the local path
+stage() {
+    local src="$1" dst
+    dst="${NODE_CACHE}/$(basename "$1")"
+    (
+        flock 9
+        # same size and modification time as the source means the cached copy is current
+        if [[ ! -s "${dst}" || "$(stat -c '%s %Y' "${src}")" != "$(stat -c '%s %Y' "${dst}")" ]]; then
+            cp -p "${src}" "${dst}.tmp.$$" && mv "${dst}.tmp.$$" "${dst}"
+        fi
+    ) 9> "${dst}.lock"
+    [[ -s "${dst}" ]] || { echo "job ${TAG}: could not stage ${src}" >&2; return 1; }
+    echo "${dst}"
+}
+[[ -s "${WORK}/gridpack_${GRID_MODE}.tar.gz" && -s "${WORK}/ATLAS_sim_FASTJET_slim.tcl" && -s "${SIF}" ]] \
+    || { echo "job ${TAG}: run scripts/00_setup.sh first" >&2; exit 1; }
+GRIDPACK=$(stage "${WORK}/gridpack_${GRID_MODE}.tar.gz")
+CARD_SRC=$(stage "${WORK}/ATLAS_sim_FASTJET_slim.tcl")
+LOCAL_SIF=$(stage "${SIF}")
+mkdir -p code
+cp -r "${TTGEN_ROOT}/scripts" "${TTGEN_ROOT}/convert" "${TTGEN_ROOT}/pylib" code/
+T_STAGE=$(( SECONDS - T0 ))
+echo "job ${TAG}: staged in ${T_STAGE} s, dir ${JOBDIR}, cache ${NODE_CACHE}"
+
+# Run a command in the local copy of the container, seeing only the job directory.
+jexec() {
+    "${CONTAINER_CMD}" exec --cleanenv --home "${JOBDIR}" --bind "${JOBDIR}" --pwd "${JOBDIR}" "${LOCAL_SIF}" "$@"
+}
 
 # ---- cards -------------------------------------------------------------------
 tar -xzf "${GRIDPACK}"
-python3 "${TTGEN_ROOT}/scripts/set_card.py" run "${PROC_NAME}/Cards/run_card.dat" \
+python3 code/scripts/set_card.py run "${PROC_NAME}/Cards/run_card.dat" \
     "nevents=${NEVENTS}" "iseed=${SEED}"
 # MadLAD leaves the shower seed at its default, which gives every job the same
 # Pythia random-number stream. Give each job its own.
-python3 "${TTGEN_ROOT}/scripts/set_card.py" shower "${PROC_NAME}/Cards/shower_card.dat" "rnd_seed=${SEED}"
+python3 code/scripts/set_card.py shower "${PROC_NAME}/Cards/shower_card.dat" "rnd_seed=${SEED}"
 
 if [[ "${GRID_MODE}" == "reuse" ]]; then
     # -o: skip the grid setup and generate from the stored grids; -n: do not recompile.
@@ -55,8 +89,9 @@ else
 fi
 
 # ---- generation ----------------------------------------------------------------
-cexec "${JOBDIR}" /app/MG5_aMC/bin/mg5_aMC mg5_exec_card
-T_GEN=$(( SECONDS - T0 ))
+TG=${SECONDS}
+jexec /app/MG5_aMC/bin/mg5_aMC mg5_exec_card
+T_GEN=$(( SECONDS - TG ))
 
 # The showered file must come from the MadSpin-decayed run. A HepMC file anywhere
 # else means the tops were not decayed by MadSpin and the sample is not all-hadronic.
@@ -73,19 +108,19 @@ SCRATCH_PEAK_KB=$(du -sk "${JOBDIR}" | cut -f1)
 { echo "set RandomSeed ${SEED}"; cat "${CARD_SRC}"; } > delphes_card.tcl
 T1=${SECONDS}
 # shellcheck disable=SC2016
-cexec "${JOBDIR}" /bin/bash -c 'set -o pipefail; gunzip -c "$1" | DelphesHepMC2 delphes_card.tcl delphes.root' _ "${HEPMC[0]}"
+jexec /bin/bash -c 'set -o pipefail; gunzip -c "$1" | DelphesHepMC2 delphes_card.tcl delphes.root' _ "${HEPMC[0]}"
 T_DELPHES=$(( SECONDS - T1 ))
 rm -rf "${PROC_NAME}"
 [[ -s delphes.root ]] || { echo "job ${TAG}: Delphes wrote no output" >&2; exit 1; }
 
 # ---- conversion: HyPER's layout plus the decay quarks ---------------------------------------------------
 T2=${SECONDS}
-cexec "${JOBDIR}" python3 "${TTGEN_ROOT}/convert/delphes_to_hyper.py" \
+jexec python3 code/convert/delphes_to_hyper.py \
     --input delphes.root --output "${TAG}.root" --meta "${TAG}.json" \
     --jet-pt-min "${JET_PT_MIN}" --jet-abs-eta-max "${JET_ABS_ETA_MAX}" \
     --match-dr "${MATCH_DR}" --top-order "${TOP_ORDER}" --conflict "${MATCH_CONFLICT}" --seed "${SEED}" \
     --extra "task=${TASK}" --extra "n_requested=${NEVENTS}" --extra "grid_mode=${GRID_MODE}" \
-    --extra "seconds_generation=${T_GEN}" --extra "seconds_delphes=${T_DELPHES}" \
+    --extra "seconds_stage_in=${T_STAGE}" --extra "seconds_generation=${T_GEN}" --extra "seconds_delphes=${T_DELPHES}" \
     --extra "hepmc_gz_bytes=${HEPMC_BYTES}" --extra "scratch_after_generation_kb=${SCRATCH_PEAK_KB}" \
     --extra "delphes_root_bytes=$(stat -c %s delphes.root)" --extra "cores=${NCORES}"
 T_CONVERT=$(( SECONDS - T2 ))
@@ -97,4 +132,4 @@ if [[ -s "${TAG}.root" ]]; then
 fi
 cp "${TAG}.json" "${RAWDIR}/.${TAG}.json.tmp"
 mv "${RAWDIR}/.${TAG}.json.tmp" "${FINAL_META}"
-echo "job ${TAG}: done in $(( SECONDS - T0 )) s (generation ${T_GEN}, delphes ${T_DELPHES}, convert ${T_CONVERT})"
+echo "job ${TAG}: done in $(( SECONDS - T0 )) s (stage-in ${T_STAGE}, generation ${T_GEN}, delphes ${T_DELPHES}, convert ${T_CONVERT})"

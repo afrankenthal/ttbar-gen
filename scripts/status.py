@@ -61,6 +61,8 @@ def main():
         print("wall time per event   %.3f s on %d cores  (generation %.0f%%, Delphes %.0f%%)"
               % (sec / ev, cores, 100.0 * sum(m["seconds_generation"] for m in timed) / sec,
                  100.0 * sum(m["seconds_delphes"] for m in timed) / sec))
+        stage = [m.get("seconds_stage_in", 0) for m in timed]
+        print("stage-in from shared disk  mean %.0f s, max %.0f s" % (sum(stage) / len(stage), max(stage)))
         print("longest task          %.1f h" % (max(m["seconds_generation"] + m["seconds_delphes"] for m in timed) / 3600.0))
         print("peak scratch per task %.1f GB (after generation; the uncompressed HepMC file is larger while it is written)"
               % (max(m.get("scratch_after_generation_kb", 0) for m in timed) / 1e6))

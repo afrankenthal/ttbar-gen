@@ -74,6 +74,10 @@ echo "setup: wrote ${WORK}/gridpack_fresh.tar.gz"
 if [[ "${GRID_MODE}" == "reuse" ]]; then
     python3 "${TTGEN_ROOT}/scripts/set_card.py" run "${PROC_NAME}/Cards/run_card.dat" \
         "nevents=${GRID_SETUP_EVENTS}" "iseed=${SEED_BASE}"
+    # MG5 removes some cards from Cards/ during a parton-level run (seen on HPC3: the
+    # shower card was gone afterwards). Keep the originals and put them back.
+    rm -rf "${BUILD}/Cards.orig"
+    cp -a "${PROC_NAME}/Cards" "${BUILD}/Cards.orig"
     cat > "${BUILD}/MadLAD/mg5_setup_card" <<CARD
 set run_mode 2
 set nb_core ${NCORES}
@@ -85,6 +89,10 @@ CARD
         || { echo "setup: the grid-setup run produced no events; see the MG5 log above" >&2; exit 1; }
     grep -i "cross.section" -A 3 "${PROC_NAME}"/Events/run_01/summary.txt 2>/dev/null || true
     rm -rf "${PROC_NAME}/Events"/*
+    cp -a "${BUILD}/Cards.orig/." "${PROC_NAME}/Cards/"
+    for f in run_card.dat shower_card.dat madspin_card.dat param_card.dat; do
+        [[ -s "${PROC_NAME}/Cards/${f}" ]] || { echo "setup: ${f} is missing after the grid-setup run" >&2; exit 1; }
+    done
     tar -czf "${BUILD}/gridpack_reuse.tar.gz" "${PROC_NAME}"
     cp "${BUILD}/gridpack_reuse.tar.gz" "${WORK}/gridpack_reuse.tar.gz"
     echo "setup: wrote ${WORK}/gridpack_reuse.tar.gz"

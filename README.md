@@ -46,9 +46,12 @@ come from the record, not from MadLAD.
    does that.
 3. **Shower and Delphes seeds set per task.** MadLAD changes only the matrix-element seed,
    which leaves every job on the same Pythia random-number stream.
-4. **Delphes run by the job script** on a stream (`gunzip -c | DelphesHepMC2`) with a
+4. **Tasks work on node-local disk.** The container image, gridpack and scripts are
+   copied to the node first (image and gridpack into a per-node cache), because the
+   shared filesystem stalls; a task touches it only at the start and for the final copy-back.
+5. **Delphes run by the job script** on a stream (`gunzip -c | DelphesHepMC2`) with a
    slimmed output tree. All simulation modules still run; only the saved branches differ.
-5. **Own container definition** on Ubuntu 20.04, because MG5 2.9.16 predates the Python
+6. **Own container definition** on Ubuntu 20.04, because MG5 2.9.16 predates the Python
    in MadLAD's current base image.
 
 ## Conventions, checked against HyPER's `ttbar_reduced.root`
